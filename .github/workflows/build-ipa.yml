@@ -1,0 +1,130 @@
+name: Build unsigned tvOS IPA
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish a Release (otherwise the .ipa is only kept as a workflow artifact)"
+        required: false
+        type: boolean
+        default: false
+      release_tag:
+        description: "Release tag (blank = build-<run number>)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Select the newest installed Xcode
+        run: |
+          set -euo pipefail
+          XC=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          echo "Using $XC"
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i appletv
+
+      - name: Generate the Xcode project
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build ClaudeTV.app (unsigned, device arm64)
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project ClaudeTV.xcodeproj \
+            -scheme ClaudeTV \
+            -configuration Release \
+            -sdk appletvos \
+            -derivedDataPath build \
+            TVOS_DEPLOYMENT_TARGET=15.6 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            clean build 2>&1 | tee build.log | grep -E "error:|warning: .*deprecated|BUILD (SUCCEEDED|FAILED)" || true
+          if ! grep -q "BUILD SUCCEEDED" build.log; then
+            echo "::group::Full build log (tail)"
+            tail -200 build.log
+            echo "::endgroup::"
+            grep -E "error:" build.log | sed 's/^/::error::/' || true
+            exit 1
+          fi
+
+      - name: Package into an unsigned .ipa
+        id: package
+        run: |
+          set -euo pipefail
+          APP=$(find build/Build/Products/Release-appletvos -maxdepth 1 -name '*.app' | head -1)
+          [ -n "$APP" ] || { echo "::error::No .app produced"; exit 1; }
+          rm -rf "$APP/_CodeSignature" "$APP/embedded.mobileprovision"
+
+          BIN="$APP/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")"
+          lipo -info "$BIN"
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist" || true
+          ls "$APP" | head -50
+
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
+          IPA="ClaudeTV-${VERSION}-unsigned.ipa"
+          rm -rf Payload && mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry "$IPA" Payload
+          rm -rf Payload
+          ls -lh "$IPA"
+          echo "ipa=$IPA" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(shasum -a 256 "$IPA" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the IPA as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeTV-unsigned-ipa
+          path: ${{ steps.package.outputs.ipa }}
+          if-no-files-found: error
+
+      - name: Publish a release with the IPA
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IPA: ${{ steps.package.outputs.ipa }}
+          VERSION: ${{ steps.package.outputs.version }}
+          SHA256: ${{ steps.package.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.release_tag }}"
+          if [ -z "$TAG" ]; then
+            if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then TAG="${GITHUB_REF_NAME}"; else TAG="build-${GITHUB_RUN_NUMBER}"; fi
+          fi
+
+          cat > notes.md <<NOTES
+          Unsigned tvOS build of Claude TV, produced by GitHub Actions. Install with TrollStore.
+
+          | | |
+          |---|---|
+          | App version | $VERSION |
+          | Xcode | $(xcodebuild -version | head -1) |
+          | tvOS deployment target | 15.6 |
+          | SHA-256 | \`$SHA256\` |
+          NOTES
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$IPA" --clobber
+          else
+            gh release create "$TAG" "$IPA" --title "Claude TV $VERSION ($TAG)" --notes-file notes.md
+          fi

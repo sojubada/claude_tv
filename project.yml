@@ -1,0 +1,36 @@
+name: ClaudeTV
+options:
+  bundleIdPrefix: com.sojubada
+  deploymentTarget:
+    tvOS: "15.6"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  ClaudeTV:
+    type: application
+    platform: tvOS
+    sources:
+      - ClaudeTV/Sources
+      - ClaudeTV/Assets.xcassets
+    info:
+      path: ClaudeTV/Info.plist
+      properties:
+        CFBundleDisplayName: Claude TV
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities: [arm64]
+        UIUserInterfaceStyle: Dark
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sojubada.claudetv
+        PRODUCT_NAME: ClaudeTV
+        ASSETCATALOG_COMPILER_APPICON_NAME: "App Icon & Top Shelf Image"
+        TARGETED_DEVICE_FAMILY: "3"
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        ENABLE_BITCODE: NO
